@@ -1,0 +1,11 @@
+{
+  "name": "뱀파이어 서바이버 미니",
+  "short_name": "뱀서바미니",
+  "description": "조이스틱으로 이동하고 자동 공격으로 생존하는 미니 게임",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#1a1a2e",
+  "theme_color": "#7c3aed",
+  "icons": []
+}

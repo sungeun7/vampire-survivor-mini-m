@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="format-detection" content="telephone=no">
+  <title>뱀파이어 서바이버 미니</title>
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-title" content="뱀서바미니">
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="manifest" href="manifest.json">
+</head>
+<body>
+  <div id="game-container">
+    <canvas id="game-canvas"></canvas>
+
+    <!-- 조이스틱 (모바일) -->
+    <div id="joystick-area">
+      <div id="joystick-base">
+        <div id="joystick-handle"></div>
+      </div>
+    </div>
+
+    <!-- UI 오버레이 (일반 버전과 동일: 타이머 · 레벨 · 경험치바) -->
+    <div id="ui-overlay">
+      <div id="top-bar">
+        <span id="timer">0:00</span>
+        <span id="level-display">Lv.1</span>
+        <span id="xp-bar-container">
+          <div id="xp-bar"></div>
+        </span>
+      </div>
+      <div id="health-bar-container">
+        <div id="health-bar"></div>
+      </div>
+      <div id="partner-health-wrap" class="hidden">
+        <span class="hp-label">친구 HP</span>
+        <div id="partner-health-bar-container">
+          <div id="partner-health-bar"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 게스트: 호스트가 레벨업 선택 중 -->
+    <div id="guest-wait-overlay" class="hidden">
+      <p>호스트가 업그레이드를 고르는 중…</p>
+    </div>
+
+    <!-- 레벨업 업그레이드 선택 모달 -->
+    <div id="levelup-modal" class="hidden">
+      <h2>레벨 업!</h2>
+      <p>업그레이드를 선택하세요</p>
+      <div id="upgrade-options"></div>
+    </div>
+
+    <!-- 시작/게임오버 화면 -->
+    <div id="start-screen">
+      <h1>뱀파이어 서바이버 미니</h1>
+      <p>조이스틱으로 이동 · 자동 공격으로 생존!</p>
+      <div id="mp-panel">
+        <label class="mp-label" for="mp-host-id">내 연결 코드 (방 만들기 후 표시)</label>
+        <input type="text" id="mp-host-id" class="mp-input" placeholder="생성 대기..." readonly>
+        <label class="mp-label" for="mp-peer-id">상대 연결 코드 (참가할 때 입력)</label>
+        <input type="text" id="mp-peer-id" class="mp-input" placeholder="예: vs-mini-a1b2c3" maxlength="36" autocomplete="off">
+        <div class="mp-row">
+          <button type="button" id="mp-host-btn" class="mp-btn">방 만들기</button>
+          <button type="button" id="mp-guest-btn" class="mp-btn">참가하기</button>
+        </div>
+        <p id="mp-status" class="mp-status"></p>
+      </div>
+      <button id="start-btn">혼자 시작</button>
+      <button type="button" id="mp-start-btn" class="hidden">둘이 시작 (호스트)</button>
+      <p id="guest-wait-start" class="hidden mp-hint">호스트가 시작할 때까지 기다려 주세요.</p>
+    </div>
+
+    <div id="gameover-screen" class="hidden">
+      <h1>게임 오버</h1>
+      <p id="final-time">생존 시간: 0:00</p>
+      <p id="final-level">최종 레벨: 1</p>
+      <button id="restart-btn">다시 하기</button>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <script src="js/game.js" defer></script>
+</body>
+</html>
