@@ -51,6 +51,7 @@
     levelUp: function () { playTone(523, 0.12, 'sine', 0.1); playTone(659, 0.12, 'sine', 0.08); playTone(784, 0.15, 'sine', 0.09); },
     upgradeSelect: function () { playTone(440, 0.08, 'sine', 0.07); },
     damage: function () { playTone(120, 0.1, 'sawtooth', 0.07); playNoise(0.06, 0.05); },
+    bomb: function () { playNoise(0.12, 0.08); playTone(90, 0.1, 'sawtooth', 0.06); },
     gameOver: function () { playTone(200, 0.2, 'sawtooth', 0.08); playTone(150, 0.25, 'sine', 0.06); },
     start: function () { playTone(400, 0.06, 'sine', 0.07); playTone(500, 0.1, 'sine', 0.06); },
   };
@@ -59,8 +60,47 @@
   // 게임 상태
   let gameRunning = false;
   let gamePaused = false; // 레벨업 선택 중
+  let manualPaused = false; // 메뉴 버튼 옆 일시정지
   let gameTime = 0;
   let lastTime = 0;
+  let gameOverRecorded = false;
+
+  const RECORDS_KEY = 'vs-mini-top10-v1';
+  function loadRecords() {
+    try {
+      const raw = localStorage.getItem(RECORDS_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  function saveRecord(seconds, level) {
+    const list = loadRecords();
+    list.push({ seconds, level, at: Date.now() });
+    list.sort((a, b) => (b.seconds - a.seconds) || (b.level - a.level));
+    const top10 = list.slice(0, 10);
+    localStorage.setItem(RECORDS_KEY, JSON.stringify(top10));
+    return top10;
+  }
+  function formatTimeSec(seconds) {
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
+  }
+  function renderRecords() {
+    const listEl = document.getElementById('records-list');
+    if (!listEl) return;
+    const list = loadRecords();
+    if (!list.length) {
+      listEl.innerHTML = '<li>기록이 없습니다</li>';
+      return;
+    }
+    listEl.innerHTML = list
+      .map((r, i) => `<li>#${i + 1} · ${formatTimeSec(r.seconds)} · Lv.${r.level}</li>`)
+      .join('');
+  }
 
   // 화면 크기 (고정 논리 해상도)
   const LOGIC_WIDTH = 400;
@@ -88,6 +128,8 @@
     moveSpeedBonus: 1,
     magnetRange: 60,
     regen: 0,
+    bombCount: 3,
+    maxBomb: 3,
   };
 
   // 입력 (조이스틱)
@@ -97,6 +139,7 @@
   let enemies = [];
   let projectiles = [];
   let xpGems = [];
+  let upgradeItems = [];
   let particles = [];
 
   /** @type {'solo'|'host'|'guest'} */
@@ -112,6 +155,8 @@
     radius: 14,
     hp: 100,
     attackTimer: 0,
+    bombCount: 3,
+    maxBomb: 3,
   };
 
   function getSpawnAnchor() {
@@ -125,12 +170,82 @@
     return netMode === 'host' ? [player, partner] : [player];
   }
 
+  // 폭탄
+  const BOMB_RADIUS = 130;
+  const BOMB_DAMAGE = 200;
+  let bombPending = false;
+
+  // 레벨 10의 배수에서 별 보스 1마리 스폰되도록 예약
+  let bossPending = false;
+
+  function updateBombUI() {
+    const ui = document.getElementById('bomb-ui');
+    const btn = document.getElementById('bomb-btn');
+    const countEl = document.getElementById('bomb-count');
+    if (!ui || !btn || !countEl) return;
+
+    const actor = netMode === 'guest' ? partner : player;
+    const bc = typeof actor.bombCount === 'number' ? actor.bombCount : 0;
+    countEl.textContent = String(bc);
+
+    const canUse = gameRunning && !gamePaused && bc > 0 && !(netMode === 'guest' && bombPending);
+    btn.disabled = !canUse;
+    ui.classList.toggle('hidden', !gameRunning);
+  }
+
+  function updateTopControlsUI() {
+    const wrap = document.getElementById('top-right-controls');
+    const pauseBtn = document.getElementById('pause-btn');
+    if (!wrap || !pauseBtn) return;
+    const show = gameRunning;
+    wrap.classList.toggle('hidden', !show);
+    pauseBtn.textContent = manualPaused ? '재개' : '일시정지';
+  }
+
+  function explodeAt(cx, cy) {
+    sound.bomb();
+    // 폭탄: 화면의 적을 전부 제거
+    const killed = enemies;
+    enemies = [];
+    killed.forEach(e => {
+      spawnXpGem(e.x, e.y, e.xpValue);
+      for (let i = 0; i < 6; i++) {
+        particles.push({
+          x: e.x,
+          y: e.y,
+          vx: (Math.random() - 0.5) * 120,
+          vy: (Math.random() - 0.5) * 120,
+          life: 0.25,
+          color: '#fb7185',
+        });
+      }
+    });
+    // 폭발 연출(중앙)
+    for (let i = 0; i < 36; i++) {
+      particles.push({
+        x: cx,
+        y: cy,
+        vx: (Math.random() - 0.5) * 280,
+        vy: (Math.random() - 0.5) * 280,
+        life: 0.25,
+        color: '#f97316',
+      });
+    }
+  }
+
+  function useBomb(actor) {
+    if (!actor || actor.bombCount <= 0) return;
+    actor.bombCount -= 1;
+    explodeAt(actor.x, actor.y);
+    if (netMode !== 'guest') updateBombUI();
+  }
+
   // 업그레이드 목록 (레벨업 시 3개 중 선택)
   const UPGRADES = [
-    { id: 'damage', name: '공격력 +30%', desc: '데미지 증가', apply: p => { p.damage *= 1.3; } },
-    { id: 'speed', name: '이동속도 +15%', desc: '이동 속도 증가', apply: p => { p.moveSpeedBonus *= 1.15; } },
-    { id: 'range', name: '사거리 +20%', desc: '공격 범위 증가', apply: p => { p.attackRange *= 1.2; } },
-    { id: 'cooldown', name: '공격속도 +15%', desc: '공격 쿨다운 감소', apply: p => { p.attackCooldown *= 0.85; } },
+    { id: 'damage', name: '공격력 +5', desc: '데미지 증가', apply: p => { p.damage += 5; } },
+    { id: 'speed', name: '이동속도 +1', desc: '이동 속도 증가', apply: p => { p.moveSpeedBonus += 1; } },
+    { id: 'cooldown', name: '공격속도 +20%', desc: '공격 쿨다운 감소', apply: p => { p.attackCooldown -= 0.2; } },
+    { id: 'bomb', name: '폭탄 +1', desc: '폭탄 보유량 증가', apply: p => { p.maxBomb += 1; p.bombCount = Math.min(p.bombCount + 1, p.maxBomb); } },
     { id: 'projectile', name: '투사체 +1', desc: '발사체 개수 증가', apply: p => { p.projectileCount += 1; } },
     { id: 'magnet', name: '자석 범위 +25%', desc: '경험치 끌어당김', apply: p => { p.magnetRange *= 1.25; } },
     { id: 'maxhp', name: '최대 체력 +20', desc: '체력 상한 증가', apply: p => { p.maxHp += 20; p.hp = Math.min(p.hp + 20, p.maxHp); } },
@@ -159,18 +274,42 @@
     offsetY = (h - targetH) / 2;
   }
 
+  /** 스테이지(플레이어 레벨)별 일반 적 방어력: 레벨 2부터 매 레벨 +2, 20의 배수 레벨에서는 +3 */
+  function enemyDefenseForStage(level) {
+    if (level < 2) return 0;
+    let d = 0;
+    for (let k = 2; k <= level; k++) {
+      d += k % 20 === 0 ? 3 : 2;
+    }
+    return d;
+  }
+
   function spawnEnemy() {
     const anchor = getSpawnAnchor();
     const angle = Math.random() * Math.PI * 2;
     const dist = 280 + Math.random() * 120;
+    const enemyLevel = Math.max(1, player.level);
+    const isBoss = !!bossPending;
+    if (isBoss) bossPending = false;
+    const baseDefense = enemyDefenseForStage(player.level);
+    const enemyDefense = baseDefense * (isBoss ? 2 : 1);
+
+    // 원(원형) -> 삼각형(3) -> 사각형(4) -> 오각형(5) -> 육각형(6)
+    // 레벨이 5를 넘어가면 모양이 다시 처음으로 돌아가도록 순환
+    const sidesMap = [0, 3, 4, 5, 6];
+    const shapeSides = isBoss ? 0 : sidesMap[(player.level - 1) % 5];
+    const baseXpValue = Math.max(1, Math.floor(enemyLevel / 2));
     enemies.push({
       x: anchor.x + Math.cos(angle) * dist,
       y: anchor.y + Math.sin(angle) * dist,
-      radius: 10 + Math.random() * 6,
-      hp: 15 + Math.floor(gameTime / 30) * 5,
-      maxHp: 15 + Math.floor(gameTime / 30) * 5,
+      radius: (10 + Math.random() * 6) * (isBoss ? 1.35 : 1),
+      hp: (15 + Math.floor(gameTime / 30) * 5) * (isBoss ? 7 : 1),
+      maxHp: (15 + Math.floor(gameTime / 30) * 5) * (isBoss ? 7 : 1),
+      defense: enemyDefense,
+      isBoss,
+      shapeSides,
       speed: 45 + gameTime / 20,
-      xpValue: 1,
+      xpValue: isBoss ? baseXpValue * 6 : baseXpValue,
     });
   }
 
@@ -178,12 +317,24 @@
     xpGems.push({ x, y, value, radius: 6, vy: 0 });
   }
 
-  function dealDamageToEnemies(cx, cy, radius, damage) {
+  function spawnUpgradeItem() {
+    const angle = Math.random() * Math.PI * 2;
+    const dist = 60 + Math.random() * 90;
+    const x = Math.max(18, Math.min(LOGIC_WIDTH - 18, player.x + Math.cos(angle) * dist));
+    const y = Math.max(18, Math.min(LOGIC_HEIGHT - 18, player.y + Math.sin(angle) * dist));
+    upgradeItems.push({ x, y, radius: 10 });
+  }
+
+  function dealDamageToEnemies(cx, cy, radius, damagePerSec, dt) {
     enemies = enemies.filter(e => {
       const dx = e.x - cx, dy = e.y - cy;
       const d = Math.hypot(dx, dy);
       if (d < radius + e.radius) {
-        e.hp -= damage;
+        // 고레벨에서도 최소 관통 피해가 들어가도록 보정
+        const raw = (damagePerSec - (e.defense || 0)) * dt;
+        const pierceFloor = damagePerSec * 0.15 * dt;
+        const reducedDamage = Math.max(pierceFloor, raw);
+        e.hp -= reducedDamage;
         if (e.hp <= 0) {
           sound.enemyKill();
           spawnXpGem(e.x, e.y, e.xpValue);
@@ -265,8 +416,12 @@
         if (netMode === 'host' && up.id === 'maxhp') {
           partner.hp = Math.min(partner.hp + 20, player.maxHp);
         }
+        if (netMode === 'host' && up.id === 'bomb') {
+          up.apply(partner);
+        }
         modal.classList.add('hidden');
         gamePaused = false;
+        updateBombUI();
       };
       optionsEl.appendChild(btn);
     });
@@ -302,6 +457,9 @@
     } else {
       document.getElementById('gameover-screen').classList.add('hidden');
     }
+
+    bombPending = false;
+    updateBombUI();
   }
 
   function buildSnapshot() {
@@ -313,7 +471,9 @@
       player: { ...player },
       partner: { ...partner },
       enemies: enemies.map(e => ({
-        x: e.x, y: e.y, radius: e.radius, hp: e.hp, maxHp: e.maxHp, speed: e.speed, xpValue: e.xpValue,
+        x: e.x, y: e.y, radius: e.radius, hp: e.hp, maxHp: e.maxHp, defense: e.defense || 0, speed: e.speed, xpValue: e.xpValue,
+        isBoss: !!e.isBoss,
+        shapeSides: e.shapeSides || 0,
       })),
       projectiles: projectiles.map(p => ({
         x: p.x, y: p.y, vx: p.vx, vy: p.vy, radius: p.radius, damage: p.damage,
@@ -333,7 +493,7 @@
       return;
     }
 
-    if (!gameRunning || gamePaused) return;
+    if (!gameRunning || gamePaused || manualPaused) return;
 
     gameTime += dt;
 
@@ -395,7 +555,7 @@
       if (p.x < -r || p.x > LOGIC_WIDTH + r || p.y < -r || p.y > LOGIC_HEIGHT + r) {
         return false;
       }
-      dealDamageToEnemies(p.x, p.y, p.radius, p.damage * dt);
+      dealDamageToEnemies(p.x, p.y, p.radius, p.damage, dt);
       return true;
     });
 
@@ -460,16 +620,31 @@
         if (d < t.radius + g.radius) {
           player.xp += g.value;
           let leveled = false;
-          while (player.xp >= player.xpToNext) {
+          while (player.level < 99 && player.xp >= player.xpToNext) {
             player.xp -= player.xpToNext;
             player.level++;
+            if (player.level % 5 === 0) spawnUpgradeItem();
+            if (player.level % 10 === 0) bossPending = true;
             player.xpToNext = Math.floor(player.xpToNext * 1.2) + 5;
             showLevelUpModal();
             leveled = true;
           }
+          if (player.level >= 99) {
+            player.xp = player.xpToNext;
+          }
           if (!leveled) sound.xpPickup();
           return false;
         }
+      }
+      return true;
+    });
+
+    // 업그레이드 아이템: 먹으면 즉시 업그레이드 선택
+    upgradeItems = upgradeItems.filter(item => {
+      const d = Math.hypot(player.x - item.x, player.y - item.y);
+      if (d < player.radius + item.radius) {
+        showLevelUpModal();
+        return false;
       }
       return true;
     });
@@ -491,6 +666,11 @@
       sound.gameOver();
       document.getElementById('final-time').textContent = `생존 시간: ${mins}:${secs.toString().padStart(2, '0')}`;
       document.getElementById('final-level').textContent = `최종 레벨: ${player.level}`;
+      if (!gameOverRecorded) {
+        gameOverRecorded = true;
+        saveRecord(gameTime, player.level);
+      }
+      renderRecords();
       document.getElementById('gameover-screen').classList.remove('hidden');
     }
 
@@ -506,6 +686,32 @@
   function draw() {
     ctx.save();
     ctx.scale(scaleX, scaleY);
+
+    // 정다각형 경로
+    function regularPolygonPath(x, y, r, sides) {
+      const step = (Math.PI * 2) / sides;
+      const start = -Math.PI / 2;
+      ctx.moveTo(x + Math.cos(start) * r, y + Math.sin(start) * r);
+      for (let i = 1; i < sides; i++) {
+        const a = start + step * i;
+        ctx.lineTo(x + Math.cos(a) * r, y + Math.sin(a) * r);
+      }
+      ctx.closePath();
+    }
+
+    // 5점 별 경로(보스)
+    function starPath(x, y, outerR, points, innerRatio) {
+      const innerR = outerR * innerRatio;
+      const step = Math.PI / points;
+      const start = -Math.PI / 2;
+      ctx.moveTo(x + Math.cos(start) * outerR, y + Math.sin(start) * outerR);
+      for (let i = 1; i < points * 2; i++) {
+        const a = start + step * i;
+        const r = (i % 2 === 0) ? outerR : innerR;
+        ctx.lineTo(x + Math.cos(a) * r, y + Math.sin(a) * r);
+      }
+      ctx.closePath();
+    }
 
     // 배경
     ctx.fillStyle = '#1a1a2e';
@@ -538,21 +744,59 @@
       ctx.stroke();
     });
 
-    // 적
+    // 업그레이드 아이템
+    upgradeItems.forEach(item => {
+      ctx.fillStyle = '#22d3ee';
+      ctx.beginPath();
+      ctx.moveTo(item.x, item.y - item.radius);
+      ctx.lineTo(item.x + item.radius, item.y);
+      ctx.lineTo(item.x, item.y + item.radius);
+      ctx.lineTo(item.x - item.radius, item.y);
+      ctx.closePath();
+      ctx.fill();
+      ctx.strokeStyle = '#67e8f9';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    });
+
+    // 적 (모양: 원 -> 삼각형 -> 사각형 -> 오각형 -> 육각형, 레벨 10 배수는 별 보스)
     enemies.forEach(e => {
-      ctx.fillStyle = '#7f1d1d';
+      const r = e.radius;
+      const sides = e.shapeSides || 0;
+      const isBoss = !!e.isBoss;
+
+      // 바깥 색
+      ctx.fillStyle = isBoss ? '#f59e0b' : '#7f1d1d';
       ctx.beginPath();
-      ctx.arc(e.x, e.y, e.radius, 0, Math.PI * 2);
+      if (isBoss) {
+        starPath(e.x, e.y, r, 5, 0.45);
+      } else if (sides <= 0) {
+        ctx.arc(e.x, e.y, r, 0, Math.PI * 2);
+      } else {
+        regularPolygonPath(e.x, e.y, r, sides);
+      }
       ctx.fill();
-      ctx.fillStyle = '#b91c1c';
+
+      // 안쪽 색(선명한 이중 테마)
+      ctx.fillStyle = isBoss ? '#fde68a' : '#b91c1c';
       ctx.beginPath();
-      ctx.arc(e.x, e.y, e.radius - 2, 0, Math.PI * 2);
+      const innerR = Math.max(3, r - 2);
+      if (isBoss) {
+        starPath(e.x, e.y, innerR, 5, 0.45);
+      } else if (sides <= 0) {
+        ctx.arc(e.x, e.y, innerR, 0, Math.PI * 2);
+      } else {
+        regularPolygonPath(e.x, e.y, innerR, sides);
+      }
       ctx.fill();
+
+      // HP 바
       if (e.hp < e.maxHp) {
+        const barW = r * 2;
         ctx.fillStyle = '#1f2937';
-        ctx.fillRect(e.x - e.radius, e.y - e.radius - 8, e.radius * 2, 4);
+        ctx.fillRect(e.x - r, e.y - r - 8, barW, 4);
         ctx.fillStyle = '#22c55e';
-        ctx.fillRect(e.x - e.radius, e.y - e.radius - 8, (e.hp / e.maxHp) * e.radius * 2, 4);
+        ctx.fillRect(e.x - r, e.y - r - 8, (e.hp / e.maxHp) * barW, 4);
       }
     });
 
@@ -687,19 +931,27 @@
     player.moveSpeedBonus = 1;
     player.magnetRange = 60;
     player.regen = 0;
+    player.bombCount = player.maxBomb;
+    partner.bombCount = partner.maxBomb;
+    bombPending = false;
     gameTime = 0;
     enemies = [];
     projectiles = [];
     xpGems = [];
+    upgradeItems = [];
     particles = [];
     gameRunning = true;
     gamePaused = false;
+    manualPaused = false;
+    gameOverRecorded = false;
     peerInput = { ix: 0, iy: 0 };
     if (netMode === 'solo') {
       document.getElementById('partner-health-wrap').classList.add('hidden');
     } else if (netMode === 'host') {
       document.getElementById('partner-health-wrap').classList.remove('hidden');
     }
+    updateBombUI();
+    updateTopControlsUI();
   }
 
   function setMpStatus(t) {
@@ -712,6 +964,10 @@
     if (msg.type === 'input' && netMode === 'host') {
       peerInput.ix = msg.ix || 0;
       peerInput.iy = msg.iy || 0;
+      return;
+    }
+    if (msg.type === 'bomb' && netMode === 'host') {
+      useBomb(partner);
       return;
     }
     if (msg.type === 'restart' && netMode === 'host') {
@@ -727,6 +983,8 @@
       document.getElementById('partner-health-wrap').classList.remove('hidden');
       gameRunning = true;
       gamePaused = false;
+      bombPending = false;
+      updateBombUI();
       return;
     }
     if (msg.type === 'snapshot' && netMode === 'guest') {
@@ -856,6 +1114,51 @@
     if (netMode === 'host' && mpConn && mpConn.open) mpConn.send({ type: 'gameStart' });
   });
 
+  const pauseBtn = document.getElementById('pause-btn');
+  if (pauseBtn) {
+    pauseBtn.addEventListener('click', () => {
+      if (!gameRunning || gamePaused) return;
+      manualPaused = !manualPaused;
+      updateTopControlsUI();
+    });
+  }
+
+  const menuBtn = document.getElementById('menu-btn');
+  if (menuBtn) {
+    menuBtn.addEventListener('click', () => {
+      gameRunning = false;
+      gamePaused = false;
+      manualPaused = false;
+      document.getElementById('levelup-modal').classList.add('hidden');
+      document.getElementById('guest-wait-overlay').classList.add('hidden');
+      document.getElementById('gameover-screen').classList.add('hidden');
+      document.getElementById('start-screen').classList.remove('hidden');
+      document.getElementById('bomb-ui').classList.add('hidden');
+      updateTopControlsUI();
+      updateBombUI();
+    });
+  }
+
+  const bombBtn = document.getElementById('bomb-btn');
+  if (bombBtn) {
+    bombBtn.addEventListener('click', () => {
+      if (!gameRunning || gamePaused) return;
+      if (netMode === 'guest') {
+        if (bombPending) return;
+        if (!mpConn || !mpConn.open) return;
+        if (partner.bombCount <= 0) return;
+        bombPending = true;
+        updateBombUI();
+        mpConn.send({ type: 'bomb' });
+        return;
+      }
+
+      useBomb(player);
+      bombPending = false;
+      updateBombUI();
+    });
+  }
+
   window.addEventListener('resize', resize);
   // iOS/Android: 주소창·키보드 등으로 뷰포트가 바뀔 때 리사이즈
   if (window.visualViewport) {
@@ -863,6 +1166,8 @@
     window.visualViewport.addEventListener('scroll', resize);
   }
   resize();
+  renderRecords();
+  updateTopControlsUI();
   lastTime = performance.now();
   requestAnimationFrame(gameLoop);
 

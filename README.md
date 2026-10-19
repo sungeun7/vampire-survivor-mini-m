@@ -24,7 +24,7 @@ PowerShell에서 프로젝트 폴더로 이동 후:
 python -m http.server 5173
 ```
 
-그 다음 브라우저에서 `http://localhost:5173` 접속.  
+그 다음 브라우저에서 `http://localhost:5173` 접속.
 모바일에서 플레이하려면 같은 Wi‑Fi에서 PC에 서버를 띄운 뒤, 휴대폰 브라우저로 `http://<PC IP>:5173` 접속하세요.
 
 ## 파일 구성
